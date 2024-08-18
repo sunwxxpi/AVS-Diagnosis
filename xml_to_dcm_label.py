@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pydicom
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from xml.etree import ElementTree as ET
 from tqdm import tqdm
 
@@ -73,34 +74,47 @@ def convert_mm_to_pixel(points_mm, slices):
     return pixel_coords
 
 # DICOM 이미지와 라벨을 겹쳐서 PNG 파일로 저장
-def save_slices_with_labels(image_data, roi_pixels, dicom_files, output_dir):
+def save_slices_with_labels(image_data, all_roi_pixels, dicom_files, output_dir):
     os.makedirs(output_dir, exist_ok=True)
+    
     total_slices = image_data.shape[0]
+    
+    # 사용할 색상 목록
+    colors = list(mcolors.TABLEAU_COLORS.values())
     
     for slice_index in range(total_slices):
         # 현재 슬라이스 이미지 가져오기
         slice_img = image_data[slice_index]
         
-        # ROI 픽셀 좌표 중 현재 슬라이스에 해당하는 것만 필터링
-        label_overlay = np.zeros_like(slice_img, dtype=np.uint8)
-        for si, row, col in roi_pixels:
-            if si == slice_index:
-                label_overlay[row, col] = 255  # 라벨 부분을 흰색으로 표시
-                
         # 이미지와 라벨 모두 좌우 반전
         slice_img = np.fliplr(slice_img)
-        label_overlay = np.transpose(np.fliplr(label_overlay)[::-1, ::-1])
+
+        # 슬라이스 내의 여러 ROI를 다른 색상으로 시각화
+        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+        ax.imshow(slice_img, cmap='gray')
         
+        roi_count = 0  # 슬라이스 내에서 ROI 색상을 순환시키기 위한 변수
+
+        for roi_coords_list in all_roi_pixels:
+            for roi_coords in roi_coords_list:
+                if roi_coords and roi_coords[0][0] == slice_index:  # 현재 슬라이스에 해당하는 ROI만 시각화
+                    label_overlay = np.zeros_like(slice_img, dtype=np.uint8)
+                    
+                    for slice, row, col in roi_coords:
+                        label_overlay[row, col] = 255  # 라벨 부분을 흰색으로 표시
+
+                    # ROI 시각화
+                    label_overlay = np.transpose(np.fliplr(label_overlay)[::-1, ::-1])
+                    ax.contour(label_overlay, levels=[0.5], colors=[colors[roi_count % len(colors)]], alpha=0.5)
+                    
+                    roi_count += 1  # 다음 ROI에 다른 색상 적용
+        
+        ax.axis('off')
+
         # DICOM 파일 이름을 기반으로 저장 파일 이름 생성
         dicom_filename = os.path.basename(dicom_files[slice_index])
         dicom_basename, dicom_ext = os.path.splitext(dicom_filename)
-        
-        # 이미지와 라벨 겹치기
-        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-        ax.imshow(slice_img, cmap='gray')
-        ax.imshow(label_overlay, cmap='Reds', alpha=0.5)  # 라벨을 빨간색으로 표시, 투명하게 겹치기
-        ax.axis('off')
-        
+
         # 슬라이스를 PNG로 저장
         output_file = os.path.join(output_dir, f'{dicom_basename}-{slice_index:03d}.png')
         plt.savefig(output_file, bbox_inches='tight', pad_inches=0)
@@ -130,9 +144,13 @@ if __name__ == '__main__':
                     # 3. ROI를 이미지 픽셀 좌표로 변환
                     all_roi_pixels = []
                     for image_index, rois_for_image in rois:
+                        roi_pixels_for_image = []
+                        
                         for roi_points_mm in rois_for_image:
                             roi_pixels = convert_mm_to_pixel(roi_points_mm, slices)
-                            all_roi_pixels.extend(roi_pixels)
+                            roi_pixels_for_image.append(roi_pixels)
+                            
+                        all_roi_pixels.append(roi_pixels_for_image)
 
                     # 4. 슬라이스별로 DICOM 이미지와 라벨을 겹쳐서 저장
                     save_slices_with_labels(image_data, all_roi_pixels, [s.filename for s in slices], output_dir)
