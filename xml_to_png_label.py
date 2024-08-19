@@ -1,25 +1,30 @@
 import os
 import numpy as np
-import pydicom
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import pydicom
 from xml.etree import ElementTree as ET
 from tqdm import tqdm
 
 # DICOM 파일 읽기
 def load_dicom_images(dicom_dir):
+    # DICOM 디렉토리에서 모든 .dcm 파일을 읽어서 slices 리스트에 저장
     slices = [pydicom.dcmread(os.path.join(dicom_dir, f)) for f in os.listdir(dicom_dir) if f.endswith('.dcm')]
+    # 이미지의 z 축 위치를 기준으로 정렬
     slices.sort(key=lambda x: float(x.ImagePositionPatient[2]))
     
+    # 각 slice의 픽셀 데이터를 스택으로 쌓아 3D 이미지 데이터 생성
     image_data = np.stack([s.pixel_array for s in slices])
     
     return image_data, slices
 
 # XML 파일 파싱
 def parse_xml(xml_file):
+    # XML 파일을 파싱하여 트리 구조 생성
     tree = ET.parse(xml_file)
     root = tree.getroot()
     
+    # XML 구조에서 이미지와 ROI 정보를 담고 있는 배열을 찾음
     images_dict = root.find('dict')
     images_array = images_dict.find('array')
     
@@ -30,9 +35,11 @@ def parse_xml(xml_file):
         rois_for_image = []
         
         for elem in image_dict:
+            # 이미지 인덱스를 가져옴
             if elem.tag == 'key' and elem.text == 'ImageIndex':
                 image_index = int(next(image_dict.iter('integer')).text)
                 
+            # 이미지에 포함된 ROI 정보를 가져옴
             if elem.tag == 'key' and elem.text == 'ROIs':
                 rois_array = next(image_dict.iter('array'))
                 
@@ -40,33 +47,39 @@ def parse_xml(xml_file):
                     points_mm = []
                     
                     for roi_elem in roi_dict:
+                        # ROI의 좌표를 mm 단위로 가져옴
                         if roi_elem.tag == 'key' and roi_elem.text == 'Point_mm':
                             points_array = next(roi_dict.iter('array'))
                             points_mm = [tuple(map(float, p.text.strip('()').split(','))) for p in points_array.iter('string')]
 
                     rois_for_image.append(points_mm)
         
+        # 인덱스와 ROI를 리스트에 추가
         if image_index is not None:
             rois.append((image_index, rois_for_image))
     
     return rois
 
-# ROI 좌표를 DICOM 이미지의 좌표로 변환
+# ROI 좌표를 DICOM 이미지의 픽셀 좌표로 변환
 def convert_mm_to_pixel(points_mm, slices):
     pixel_coords = []
     
     for point in points_mm:
         point = np.array(point)
+        # z 위치가 가장 가까운 slice를 찾음
         slice_index = min(range(len(slices)), key=lambda i: abs(slices[i].ImagePositionPatient[2] - point[2]))
         slice = slices[slice_index]
         
-        image_orientation = np.array(slice.ImageOrientationPatient)
-        image_position = np.array(slice.ImagePositionPatient)
-        pixel_spacing = np.array(slice.PixelSpacing)
+        # 이미지의 방향 및 위치, 픽셀 간격을 가져옴
+        image_orientation = np.array(slice.ImageOrientationPatient, dtype=np.float64)
+        image_position = np.array(slice.ImagePositionPatient, dtype=np.float64)
+        pixel_spacing = np.array(slice.PixelSpacing, dtype=np.float64)
         
+        # DICOM 이미지의 행과 열 방향 코사인 벡터
         row_cosine = image_orientation[0:3]
         col_cosine = image_orientation[3:6]
         
+        # 물리 좌표를 픽셀 좌표로 변환
         row = np.dot(point - image_position, row_cosine) / pixel_spacing[1]
         col = np.dot(point - image_position, col_cosine) / pixel_spacing[0]
         pixel_coords.append((slice_index, int(round(row)), int(round(col))))
@@ -77,16 +90,16 @@ def convert_mm_to_pixel(points_mm, slices):
 def save_slices_with_labels(image_data, all_roi_pixels, dicom_files, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
-    total_slices = image_data.shape[0]
+    total_slices = image_data.shape[0]  # 전체 슬라이스 개수
     
-    # 사용할 색상 목록
+    # 사용할 색상 목록 (matplotlib의 Tableau 색상 팔레트 사용)
     colors = list(mcolors.TABLEAU_COLORS.values())
     
     for slice_index in range(total_slices):
         # 현재 슬라이스 이미지 가져오기
         slice_img = image_data[slice_index]
         
-        # 이미지와 라벨 모두 좌우 반전
+        # 이미지 좌우 반전
         slice_img = np.fliplr(slice_img)
 
         # 슬라이스 내의 여러 ROI를 다른 색상으로 시각화
@@ -109,7 +122,7 @@ def save_slices_with_labels(image_data, all_roi_pixels, dicom_files, output_dir)
                     
                     roi_count += 1  # 다음 ROI에 다른 색상 적용
         
-        ax.axis('off')
+        ax.axis('off')  # 축을 숨김
 
         # DICOM 파일 이름을 기반으로 저장 파일 이름 생성
         dicom_filename = os.path.basename(dicom_files[slice_index])
@@ -156,3 +169,5 @@ if __name__ == '__main__':
                     save_slices_with_labels(image_data, all_roi_pixels, [s.filename for s in slices], output_dir)
                 else:
                     print(f"Skipping directory: {dir_name} (Missing DICOM or XML files)")
+                    
+    print("XML to PNG Label 작업 완료!")
