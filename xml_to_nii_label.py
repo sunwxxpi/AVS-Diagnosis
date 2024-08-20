@@ -32,28 +32,36 @@ def parse_xml(xml_file):
     
     for image_dict in images_array.findall('dict'):
         image_index = None
+        roi_name = None
         rois_for_image = []
         
-        for elem in image_dict:
+        for i, elem in enumerate(list(image_dict)):
             # 이미지 인덱스를 가져옴
             if elem.tag == 'key' and elem.text == 'ImageIndex':
-                image_index = int(next(image_dict.iter('integer')).text)
+                image_index = int(list(image_dict)[i + 1].text)
                 
             # 이미지에 포함된 ROI 정보를 가져옴
             if elem.tag == 'key' and elem.text == 'ROIs':
-                rois_array = next(image_dict.iter('array'))
+                rois_array = list(image_dict)[i + 1]
                 
                 for roi_dict in rois_array.findall('dict'):
                     points_mm = []
+                    roi_name = None
                     
-                    for roi_elem in roi_dict:
+                    for j, roi_elem in enumerate(list(roi_dict)):
                         # ROI의 좌표를 mm 단위로 가져옴
                         if roi_elem.tag == 'key' and roi_elem.text == 'Point_mm':
-                            points_array = next(roi_dict.iter('array'))
-                            points_mm = [tuple(map(float, p.text.strip('()').split(','))) for p in points_array.iter('string')]
+                            points_array = list(roi_dict)[j + 1]
+                            points_mm = [tuple(map(float, p.text.strip('()').split(','))) for p in points_array.findall('string')]
+                        
+                        # ROI의 이름을 가져옴
+                        if roi_elem.tag == 'key' and roi_elem.text == 'Name':
+                            roi_name = list(roi_dict)[j + 1].text
 
-                    rois_for_image.append(points_mm)
-        
+                    # ROI의 좌표와 이름이 존재하는 경우 리스트에 추가
+                    if points_mm and roi_name:
+                        rois_for_image.append((points_mm, roi_name))
+
         # 인덱스와 ROI를 리스트에 추가
         if image_index is not None:
             rois.append((image_index, rois_for_image))
@@ -97,25 +105,26 @@ def create_label_nii(image_shape, all_roi_pixels, output_file, voxel_spacing, or
     # 레이블 데이터를 위한 빈 3D 배열 생성
     label_data = np.zeros(image_shape, dtype=np.int16)
     
-    for roi_pixels in all_roi_pixels:
+    for roi_pixels, roi_name in all_roi_pixels:
         roi_label = np.zeros(image_shape, dtype=np.int16)
+        roi_value = label_value_from_name(roi_name)  # ROI 이름에 따라 라벨 값을 설정
         
-        # 각 ROI의 픽셀을 라벨 데이터에 추가
+        # 각 슬라이스에서 ROI 위치에 라벨 값 할당
         for slice_index, row, col in roi_pixels:
-            roi_label[slice_index, row, col] = 1
+            roi_label[slice_index, row, col] = roi_value
 
         # Morphology 연산 적용 (filling)
         if fill:
             for i in range(roi_label.shape[0]):
                 roi_label[i] = cv2.morphologyEx(roi_label[i].astype(np.uint8), cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
 
-        # 여러 ROI가 겹치지 않도록 최대값을 취하여 결합
+        # 최대값을 사용해 각 ROI의 라벨 데이터를 결합
         label_data = np.maximum(label_data, roi_label)
 
-    # 레이블 데이터를 (row, col, slice) 순서로 변환
+    # NIfTI 형식에 맞게 데이터 축 순서를 변경
     label_data = np.transpose(label_data, (1, 2, 0))  # (slice, row, col) -> (row, col, slice)
     
-    # DICOM의 좌표계를 반영한 affine matrix 생성
+    # NIfTI 헤더를 위한 affine 행렬 생성
     row_cosine = np.array(image_orientation[:3], dtype=np.float64)
     col_cosine = np.array(image_orientation[3:], dtype=np.float64)
     slice_cosine = np.cross(row_cosine, col_cosine)
@@ -126,10 +135,21 @@ def create_label_nii(image_shape, all_roi_pixels, output_file, voxel_spacing, or
     affine[0:3, 2] = slice_cosine * float(voxel_spacing[2])
     affine[0:3, 3] = np.array(origin, dtype=np.float64)
     
-    # NIfTI 이미지로 저장
+    # NIfTI 파일로 저장
     nii_img = nib.Nifti1Image(label_data, affine)
     nii_img.header.set_zooms(voxel_spacing)
     nib.save(nii_img, output_file)
+
+# ROI 이름에 따라 라벨 값을 반환
+def label_value_from_name(roi_name):
+    if roi_name == 'Left Anterior Descending Artery':
+        return 1
+    elif roi_name == 'Left Circumflex Artery':
+        return 2
+    elif roi_name == 'Right Coronary Artery':
+        return 3
+    else:
+        return 0  # Unknown or unlabelled
 
 if __name__ == '__main__':
     root_dir = './COCA/COCA_final'
@@ -158,11 +178,11 @@ if __name__ == '__main__':
                     # 3. ROI를 이미지 픽셀 좌표로 변환
                     all_roi_pixels = []
                     for image_index, rois_for_image in rois:
-                        for roi_points_mm in rois_for_image:
+                        for roi_points_mm, roi_name in rois_for_image:
                             roi_pixels = convert_mm_to_pixel(roi_points_mm, slices, image_data)
-                            all_roi_pixels.append(roi_pixels)
+                            all_roi_pixels.append((roi_pixels, roi_name))
 
-                    # DICOM 파일의 voxel spacing 및 origin 가져오기
+                    # NIfTI 파일 생성을 위한 DICOM 파일의 voxel spacing 및 origin 정보 추출
                     voxel_spacing = np.array([float(slices[0].PixelSpacing[0]), float(slices[0].PixelSpacing[1]), float(slices[1].SliceThickness)])
                     origin = np.array(slices[0].ImagePositionPatient, dtype=np.float64)
                     image_orientation = np.array(slices[0].ImageOrientationPatient, dtype=np.float64)
