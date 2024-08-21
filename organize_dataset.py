@@ -38,9 +38,6 @@ def dicom_to_nifti(dicom_dir, output_path):
         # z spacing이 3이 아니면 경고 출력
         if z_spacing != 3.0:
             print(f"Z spacing of {dicom_dir}: {z_spacing}")
-        if z_spacing == 0 or np.isclose(z_spacing, 0):
-            print(f"Warning: Z spacing {z_spacing} is zero or close to zero for {output_path}. Using default value of 3.")
-            z_spacing = 3.0  # 기본값으로 3.0을 사용
     else:
         z_spacing = 3.0  # 한 장만 있으면 기본 z spacing을 3.0으로 설정
     
