@@ -183,7 +183,10 @@ if __name__ == '__main__':
                             all_roi_pixels.append((roi_pixels, roi_name))
 
                     # NIfTI 파일 생성을 위한 DICOM 파일의 voxel spacing 및 origin 정보 추출
-                    voxel_spacing = np.array([float(slices[0].PixelSpacing[0]), float(slices[0].PixelSpacing[1]), float(slices[1].SliceThickness)])
+                    voxel_spacing = np.array([float(slices[0].PixelSpacing[0]), 
+                                              float(slices[0].PixelSpacing[1]), 
+                                              abs(slices[1].ImagePositionPatient[2] - slices[0].ImagePositionPatient[2])
+                                              ])
                     origin = np.array(slices[0].ImagePositionPatient, dtype=np.float64)
                     image_orientation = np.array(slices[0].ImageOrientationPatient, dtype=np.float64)
                     
