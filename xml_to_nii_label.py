@@ -68,6 +68,25 @@ def parse_xml(xml_file):
     
     return rois
 
+# ROI 좌표를 연결하여 다각형을 채우는 함수
+def fill_roi(image_shape, roi_pixels):
+    filled_image = np.zeros(image_shape, dtype=np.uint8)
+    
+    # 각 슬라이스 별로 처리
+    for slice_index in range(image_shape[0]):
+        # 해당 슬라이스에 속하는 픽셀 좌표를 가져옴
+        slice_pixels = [(col, row) for idx, row, col in roi_pixels if idx == slice_index]
+        
+        # 최소 3개의 점이 있어야 다각형을 그릴 수 있음
+        if len(slice_pixels) >= 3:
+            # 좌표들을 NumPy 배열로 변환
+            contour = np.array(slice_pixels, dtype=np.int32)
+            
+            # 다각형의 내부를 채움
+            cv2.fillPoly(filled_image[slice_index], [contour], 255)
+    
+    return filled_image
+
 # ROI 좌표를 DICOM 이미지의 픽셀 좌표로 변환
 def convert_mm_to_pixel(points_mm, slices, image_data):
     pixel_coords = []
@@ -109,16 +128,17 @@ def create_label_nii(image_shape, all_roi_pixels, output_file, voxel_spacing, or
         roi_label = np.zeros(image_shape, dtype=np.int16)
         roi_value = label_value_from_name(roi_name)  # ROI 이름에 따라 라벨 값을 설정
         
-        # 각 슬라이스에서 ROI 위치에 라벨 값 할당
-        for slice_index, row, col in roi_pixels:
-            roi_label[slice_index, row, col] = roi_value
-
-        # Morphology 연산 적용 (filling)
         if fill:
-            for i in range(roi_label.shape[0]):
-                roi_label[i] = cv2.morphologyEx(roi_label[i].astype(np.uint8), cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+            # ROI를 다각형으로 채움
+            filled_image = fill_roi(image_shape, roi_pixels)
+            # 채워진 ROI 이미지에 해당 라벨 값을 적용 (0이 아닌 경우에만)
+            roi_label = (filled_image > 0).astype(np.int16) * roi_value  # 0이 아닌 값에 대해만 roi_value를 곱함
+        else:
+            # 각 슬라이스에서 ROI 위치에 라벨 값 할당 (fill=False일 때)
+            for slice_index, row, col in roi_pixels:
+                roi_label[slice_index, row, col] = roi_value
 
-        # 최대값을 사용해 각 ROI의 라벨 데이터를 결합
+        # 최대값을 사용해 각 ROI의 라벨 데이터를 결합 (다른 ROI와 중복되는 경우를 방지)
         label_data = np.maximum(label_data, roi_label)
 
     # NIfTI 형식에 맞게 데이터 축 순서를 변경
@@ -183,10 +203,11 @@ if __name__ == '__main__':
                             all_roi_pixels.append((roi_pixels, roi_name))
 
                     # NIfTI 파일 생성을 위한 DICOM 파일의 voxel spacing 및 origin 정보 추출
-                    voxel_spacing = np.array([float(slices[0].PixelSpacing[0]), 
-                                              float(slices[0].PixelSpacing[1]), 
-                                              abs(slices[1].ImagePositionPatient[2] - slices[0].ImagePositionPatient[2])
-                                              ])
+                    voxel_spacing = np.array([
+                                        float(slices[0].PixelSpacing[0]), 
+                                        float(slices[0].PixelSpacing[1]), 
+                                        abs(slices[1].ImagePositionPatient[2] - slices[0].ImagePositionPatient[2])
+                                        ])
                     origin = np.array(slices[0].ImagePositionPatient, dtype=np.float64)
                     image_orientation = np.array(slices[0].ImageOrientationPatient, dtype=np.float64)
                     
